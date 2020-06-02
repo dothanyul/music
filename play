@@ -1,0 +1,190 @@
+#!/usr/bin/env perl
+use strict;
+use warnings;
+use Cwd;
+use Switch;
+use List::Util qw(shuffle);
+use Scalar::Util qw(looks_like_number);
+use Term::ReadKey;
+
+# default flag values
+my $shuffle = 0; # boolean
+my $repeat = 0; # boolean
+my $track = ""; # track to start at
+my $first_track = ""; # entire path+name of track to start at
+# default settings: exit after each song, no command line output, show window with album cover
+my @playargs = ( "-autoexit", "-loglevel", "8");
+
+my @dirs;
+# read command line arguments
+while ( my $arg = shift @ARGV ) {
+    # take short options in condensed form
+    if ( $arg =~ /^-[^-].+/ ) {
+        # add the rest of the string back to the arg list
+        unshift @ARGV, "-" . substr $arg, 2;
+        $arg = substr $arg, 0, 2;
+    }
+    switch ( $arg ) {
+        case ["-h", "--help"] {
+            print "Usage: play [option]... [path]...\n";
+            print "Options:\n";
+            print "Mandatory arguments to long options are mandatory for short ones too.\n";
+            print "-d, --display [ARG]:\n\tDisplay a window with either of:\n";
+            print "\t\t0: The album cover (default)\n";
+            print "\t\t1: The stereo waves\n";
+            print "\t\t2: The mono continuous Fourier transform\n";
+            print "\t\t3: No window\n";
+            print "-f, --fullscreen:\n\tPlay in fullscreen mode.\n";
+            print "-h, --help:\n\tPrint this help and exit.\n";
+            print "-r, --repeat:\n\tPlay all given tracks on repeat until stopped manually.\n";
+            print "-s, --shuffle:\n\tShuffle all given songs.\n";
+            print "-t, --first-track TITLE:\n\t";
+            print "Play TITLE first, then the rest of the given songs, omitting TITLE\n\t";
+            print "With --shuffle, shuffles all given songs, starting with TITLE.\n";
+            print "-v, --volume NUM:\n\t";
+            print "Play at NUM% of max volume. Numbers greater than 100 are treated as\n\t";
+            print "100, while negative numbers are treated as 0 (silent).\n";
+            print "\nTakes a directory or directories containing music files and plays them with\n";
+            print "ffmpeg; when given no directory, plays songs in the current directory and up\n";
+            print "to 2 levels of subdirectories.\n";
+            print "Enter ^C on the command line to stop, or press Q or close the window to skip \n";
+            print "to the next song.\n";
+            print "For more information see ffplay(1).\n";
+            exit 0;
+        }
+        case ["-d", "--display"] {
+            my $disp = shift @ARGV;
+            if ( looks_like_number( $disp ) ) {
+                if ( $disp == 3 ) {
+                    push @playargs, "-nodisp";
+                } elsif ( 0 <= $disp && $disp <= 2 ) {
+                    push @playargs, "-showmode";
+                    push @playargs, $disp;
+                }
+            } else {
+                unshift @ARGV, $disp;
+            }
+        }
+        case ["-f", "--fullscreen"] {
+            push @playargs, ( '-x', '1920', '-y', '1080' );
+        }
+        case ["-r", "--repeat"] {
+            $repeat = 1;
+        }
+        case ["-s", "--shuffle"] {
+            $shuffle = 1;
+        }
+        case ["-t", "--first-track"] {
+            $track = shift @ARGV;
+        }
+        case ["-v", "--volume"] {
+            my $vol = shift @ARGV;
+            if ( looks_like_number( $vol ) ) {
+                push @playargs, "-volume";
+                if ( $vol >= 100 ) {
+                    push @playargs, "100";
+                } elsif ( $vol <= 0 ) {
+                    push @playargs, "0";
+                } else {
+                    push @playargs, $vol;
+                }
+            } else {
+                print "$vol is not a valid volume level!\n";
+            }
+        }
+        case "--" {
+            # last option, everything else is a song/folder
+            while ( $arg = shift @ARGV ) {
+                push @dirs, $arg;
+            }
+        }
+        else {
+            push @dirs, $arg;
+        }
+    }
+}
+
+if ( ! @dirs ) {
+    push @dirs, getcwd();
+}
+
+my @songs;
+my $dh;
+
+# take an argument which is an item in a directory
+# if the item is a playable song, add it to songs
+# if it's a directory, recurse on all its contents
+sub ParseInput {
+    if ( -d $_[0] ) {
+        # replacement for qx( ls ... ) because it was having trouble with files with both single quotes and parentheses
+        opendir $dh, $_[0] or die "Can't open directory \"$_[0]\": $!";
+        my @contents = sort {  # sort by leading number (track number), or alphabetically if either string doesn't have that
+            if ( $a =~ /^\d/ && $b =~ /^\d/ ) { ( $a =~ /^(\d+)/ )[0] <=> ( $b =~ /^(\d+)/ )[0] } 
+            else { $a cmp $b }
+        } grep { !/^\./ } readdir $dh;
+        closedir $dh;
+        foreach my $content ( @contents ) {
+            chomp( $content );
+            ParseInput( "$_[0]/$content" );
+        }
+    } elsif ( qx( file -- "$_[0]" ) =~ m/audio/i ) {
+        # play the requested track first
+        if ( $track ne '' && $_[0] =~ m/${track}(\....)?\Z/i && $first_track eq '' ) {
+            $first_track = $_[0];
+        } else {
+            push @songs, $_[0];
+        }
+    }
+}
+
+# loop through all given directories
+foreach my $lvl1 ( @dirs ) {
+    # trim off trailing slash if it's there
+    if ( $lvl1 =~ /\/$/ ) {
+        $lvl1 = substr $lvl1, 0, -1;
+    }
+    ParseInput( $lvl1 );
+}
+
+# let them know they gave a bad argument
+if ( $track ne '' && $first_track eq '' ) {
+    print "Couldn't find track ${track}.\n";
+}
+
+# some post-processing for command-line args
+if ( $shuffle ) {
+    @songs = shuffle( @songs );
+}
+if ( $first_track ne '' ) {
+    unshift @songs, $first_track;
+}
+
+# allow songs that start with dashes
+push @playargs, "--";
+# make space for the song as the last arg
+push @playargs, "";
+
+# play the songs!
+PLAY:
+foreach my $song ( @songs ) {
+    $playargs[-1] = $song;
+    print $song."\n";
+    system( 'ffplay', @playargs );
+    # stop all playing on ^C
+    if ( $? ) {
+        goto END;
+    } else {
+        # get rid of old song name to replace it
+        print "\033[2A\033[2K";
+    }
+}
+if ( $repeat ) {
+    if ( $shuffle ) {
+        @songs = shuffle( @songs );
+    }
+    goto PLAY;
+}
+
+END:
+# erase ^C if it's there
+print "\033[2D";
