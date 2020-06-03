@@ -13,7 +13,7 @@ my $repeat = 0; # boolean
 my $track = ""; # track to start at
 my $first_track = ""; # entire path+name of track to start at
 # default settings: exit after each song, no command line output, show window with album cover
-my @playargs = ( "-autoexit", "-loglevel", "8");
+my @playargs = ( "-autoexit", "-loglevel", "8" );
 
 my @dirs;
 # read command line arguments
@@ -21,12 +21,12 @@ while ( my $arg = shift @ARGV ) {
     # take short options in condensed form
     if ( $arg =~ /^-[^-].+/ ) {
         # add the rest of the string back to the arg list
-        unshift @ARGV, "-" . substr $arg, 2;
+        unshift @ARGV, "-" . substr( $arg, 2 );
         $arg = substr $arg, 0, 2;
     }
     switch ( $arg ) {
         case ["-h", "--help"] {
-            print "Usage: play [option]... [path]...\n";
+            print "Usage: play [options]... [path]...\n";
             print "Options:\n";
             print "Mandatory arguments to long options are mandatory for short ones too.\n";
             print "-d, --display [ARG]:\n\tDisplay a window with either of:\n";
@@ -39,16 +39,17 @@ while ( my $arg = shift @ARGV ) {
             print "-r, --repeat:\n\tPlay all given tracks on repeat until stopped manually.\n";
             print "-s, --shuffle:\n\tShuffle all given songs.\n";
             print "-t, --first-track TITLE:\n\t";
-            print "Play TITLE first, then the rest of the given songs, omitting TITLE\n\t";
+            print "Play the given songs from TITLE to the end; gives unpredictable results when\n\t";
+            print "given more than one album.\n\t";
             print "With --shuffle, shuffles all given songs, starting with TITLE.\n";
             print "-v, --volume NUM:\n\t";
-            print "Play at NUM% of max volume. Numbers greater than 100 are treated as\n\t";
-            print "100, while negative numbers are treated as 0 (silent).\n";
+            print "Play at NUM% of max volume. Numbers greater than 100 are treated as 100, while\n\t";
+            print "negative numbers are treated as 0 (silent).\n";
             print "\nTakes a directory or directories containing music files and plays them with\n";
-            print "ffmpeg; when given no directory, plays songs in the current directory and up\n";
-            print "to 2 levels of subdirectories.\n";
-            print "Enter ^C on the command line to stop, or press Q or close the window to skip \n";
-            print "to the next song.\n";
+            print "ffmpeg; when given no directory, plays songs in the current directory and up to\n";
+            print "2 levels of subdirectories.\n";
+            print "Enter ^C on the command line to stop, or press Q or close the window to skip to\n";
+            print "the next song.\n";
             print "For more information see ffplay(1).\n";
             exit 0;
         }
@@ -129,8 +130,13 @@ sub ParseInput {
         }
     } elsif ( qx( file -- "$_[0]" ) =~ m/audio/i ) {
         # play the requested track first
-        if ( $track ne '' && $_[0] =~ m/${track}(\....)?\Z/i && $first_track eq '' ) {
-            $first_track = $_[0];
+        if ( $track ne '' ) {
+            # match ending with the given string, possibly excluding the suffix - don't require track number or directory prefix
+            if ( $_[0] =~ m/${track}(\..{3,4})?\Z/i && $first_track eq '' ) {
+                $first_track = $_[0];
+            } elsif ( $shuffle || $first_track ne '' ) {  # only play preceding songs if shuffling
+                push @songs, $_[0];
+            }
         } else {
             push @songs, $_[0];
         }
