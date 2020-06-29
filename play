@@ -38,10 +38,10 @@ while ( my $arg = shift @ARGV ) {
             print "-h, --help:\n\tPrint this help and exit.\n";
             print "-r, --repeat:\n\tPlay all given tracks on repeat until stopped manually.\n";
             print "-s, --shuffle:\n\tShuffle all given songs.\n";
-            print "-t, --first-track TITLE:\n\t";
-            print "Play the given songs from TITLE to the end; gives unpredictable results when\n\t";
-            print "given more than one album.\n\t";
-            print "With --shuffle, shuffles all given songs, starting with TITLE.\n";
+            print "-t, --first-track TRACK:\n\t";
+            print "Play the given songs from TRACK to the end, given as either a title or a track\n\t";
+            print "number; might or might not skip entire albums when given more than one album.\n\t";
+            print "With --shuffle, shuffles all given songs, starting with TRACK.\n";
             print "-v, --volume NUM:\n\t";
             print "Play at NUM% of max volume. Numbers greater than 100 are treated as 100, while\n\t";
             print "negative numbers are treated as 0 (silent).\n";
@@ -116,8 +116,14 @@ my $dh;
 # if the item is a playable song, add it to songs
 # if it's a directory, recurse on all its contents
 sub ParseInput {
+    # replacement for qx( file ... ) because qx is bad
+    my $name = $_[0];
+    $name =~ s/"/\\"/g;
+    open my $out, '-|', "file -- \"$name\" 2>/dev/null" || die "Couldn't run file: $!";
+    chomp( my $type = <$out> );
+    close $out || die "Bad file: $! $?";
     if ( -d $_[0] ) {
-        # replacement for qx( ls ... ) because it was having trouble with files with both single quotes and parentheses
+        # replacement for qx( ls ... ) because qx is bad
         opendir $dh, $_[0] or die "Can't open directory \"$_[0]\": $!";
         my @contents = sort {  # sort by leading number (track number), or alphabetically if either string doesn't have that
             if ( $a =~ /^\d/ && $b =~ /^\d/ ) { ( $a =~ /^(\d+)/ )[0] <=> ( $b =~ /^(\d+)/ )[0] } 
@@ -128,13 +134,17 @@ sub ParseInput {
             chomp( $content );
             ParseInput( "$_[0]/$content" );
         }
-    } elsif ( qx( file -- "$_[0]" ) =~ m/audio/i ) {
+    } elsif ( $type =~ m/audio/i ) {
         # play the requested track first
-        if ( $track ne '' ) {
-            # match ending with the given string, possibly excluding the suffix - don't require track number or directory prefix
-            if ( $_[0] =~ m/${track}(\..{3,4})?\Z/i && $first_track eq '' ) {
+        if ( $track ne '' && $first_track eq '' ) {
+            # match if given a track number
+            if ( $track =~ m/^\d+$/ && $_[0] =~ m/\/0*${track} / ) {
                 $first_track = $_[0];
-            } elsif ( $shuffle || $first_track ne '' ) {  # only play preceding songs if shuffling
+            # match case-insensitively if given a title - don't require track number or directory prefix
+            } elsif ( $_[0] =~ m/${track}(\..{3,4})?\Z/i ) {
+                $first_track = $_[0];
+            # only play preceding songs if shuffling
+            } elsif ( $shuffle ) {
                 push @songs, $_[0];
             }
         } else {
@@ -181,7 +191,7 @@ foreach my $song ( @songs ) {
         goto END;
     } else {
         # get rid of old song name to replace it
-        print "\033[2A\033[2K";
+        print "\x1b[2A\x1b[2K";
     }
 }
 if ( $repeat ) {
