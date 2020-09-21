@@ -9,5 +9,5 @@ directories of hard links in the folder ~/Music/playlists. Currently has
 functionality for creating new playlists, listing existing playlists, renaming 
 playlists, and adding and removing songs from playlists.
 
-songdata.pl is the beginning of a script to standardize my ID3 tags, using the
-eyeD3 program by nicfit.
+songdata.pl takes newly downloaded albums and sets their ID3 metadata using the
+eyeD3 program by nicfit, then sorts them by artist, then album into ~/Music.

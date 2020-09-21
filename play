@@ -46,8 +46,8 @@ while ( my $arg = shift @ARGV ) {
             print "Play at NUM% of max volume. Numbers greater than 100 are treated as 100, while\n\t";
             print "negative numbers are treated as 0 (silent).\n";
             print "\nTakes a directory or directories containing music files and plays them with\n";
-            print "ffmpeg; when given no directory, plays songs in the current directory and up to\n";
-            print "2 levels of subdirectories.\n";
+            print "ffmpeg; when given no directory, plays songs in the current directory and any\n";
+            print "subdirectories.\n";
             print "Enter ^C on the command line to stop, or press Q or close the window to skip to\n";
             print "the next song.\n";
             print "For more information see ffplay(1).\n";
