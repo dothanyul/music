@@ -4,92 +4,75 @@ use warnings;
 use Switch;
 use Env qw(HOME);
 use IO::Handle;
-use Term::ReadKey;
+use File::Path;
+#use Term::ReadKey;
 
-open( ERR, '>', "errors.txt" ) or die $!;
+#TODO write a manual and document all the functionality before I forget the random things I put in here
 
-# get some regular input from user, don't accept names containing /
-sub getplist {
-    my $ret = '';
-    while ( $ret eq '' ) {
-        print "Enter a playlist name, or q to cancel: ";
-        chomp( $ret = <STDIN> );
-        if ( $ret =~ m/^[Qq]$/ ) {
-            # return an impossible name as an quit signal
-            return "/";
-        } elsif ( $ret =~ m/\// ) {
-            print "Playlist name can't contain \"/\"\n";
-            $ret = '';
-        }
-    }
-    return $ret;
-}
+# absolute path to the folder where the playlists are stored
+my $playlists = "$HOME/Music/.playlists";
 
 ### helper functions to read and autocomplete input
 
-# take a list of matches and return the longest starting substring that
-# matches everything in the list
+# take a list of matches and return the longest starting substring that matches everything in the list
 sub extend {
-    if ( scalar @_ == 0 ) {
+    if (scalar @_ == 0) {
         return '';
-    } elsif ( scalar @_ == 1 ) {  # already been filtered by match
+    } elsif (scalar @_ == 1) {  # already been filtered by match
         return $_[0];
     }
     my $ret = '';
-    while ( 1 ) {
+    while (1) {
         # add 1 character to ret each time, then check if that breaks it
-        $ret = substr $_[0], 0, length( $ret ) + 1;
-        foreach my $match ( @_ ) {
-            if ( $match !~ m/^\Q$ret\E/ ) {
-                return substr $ret, 0, -1;  # check if it broke it
-            } elsif ( $match eq $ret ) {
-                return $ret;  # check if it can't go any farther
+        $ret = substr $_[0], 0, length($ret) + 1;
+        foreach my $match (@_) {
+            if ($match !~ m/^\Q$ret\E/) { # check if it broke it
+                return substr $ret, 0, -1;
+            } elsif ($match eq $ret) { # check if it can't go any farther
+                return $ret;
             }
         }
     }
 }
 
-# take a string and a list and return a list of everything in the list that
-# starts with the string
+# take a string and a list and return a list of everything in the list that starts with the string
 sub match {
-    if ( $_[0] eq '' ) {
+    if ($_[0] eq '') {
         return @_;
     }
     my @ret = ();
     # take off first arg which is the matching string
-    foreach my $word ( splice @_, 1 ) {
+    foreach my $word (splice @_, 1) {
         chomp $word;
-        if ( $word =~ /^\Q$_[0]\E/ ) {
-            if ( $word !~ m/^\s*$/ ) {
+        if ($word =~ /^\Q$_[0]\E/) {
+            if ($word !~ m/^\s*$/) {
                 push @ret, $word;
-            } else {
-                print ERR "Blank match: \"$word\"\n";
-            }
+            } #else {
+#                print ERR "Blank match: \"$word\"\n";
+#            }
         }
     }
     return @ret;
 }
 
 ### function to read and autocomplete input
-# read in and return some input, one character at a time with feedback on up to
-# 10 matches and also autocompletion on tab
-# takes a prompt to print and a folder to search in (either ~/Music for songs 
-# to add or ~/Music/playlists for playlists to edit)
+# read in and return some input, one character at a time with feedback on up to 10 matches and also autocompletion on tab
+# takes a prompt to print, a folder to search in (either ~/Music for songs to add or ~/Music/playlists for playlists to edit), a boolean to search directories or not, and a boolean to print feedback on empty input or not
 sub input {
     # get and save relevant current settings (min and icanon)
-    my @out =  qx( stty -a );
+    my @out = qx(stty -a);
     my $min = 0;
     my $icanon = '';
     my $width = 0;
     my $delim = qr/;\s/;
-    while ( my ( $i, $line ) = each( @out ) ) {
-        if ( $i == 4 ) { $delim = qr/\s/; }
-        foreach my $setting ( split $delim, $line ) {
-            if ( $setting =~ m/min = \d/ ) {
+    while (my ($i, $line) = each(@out)) {
+        if ($i == 4) { $delim = qr/\s/; }
+        foreach my $setting (split $delim, $line) {
+            if ($setting =~ m/min = \d/) {
                 $min = substr $setting, 6;
-            } elsif ( $setting =~ m/icanon/ ) {
+            } elsif ($setting =~ m/icanon/) {
                 $icanon = $setting;
-            } elsif ( $setting =~ m/columns/ ) {
+            } elsif ($setting =~ m/columns/) {
                 $width = substr $setting, 8;
             }
         }
@@ -97,69 +80,44 @@ sub input {
 
     # read some input one char at a time
     system "stty", '-icanon', 'min', '1';
-    my $io = IO::Handle->new_from_fd( fileno( STDIN ), "r" );
+    my $io = IO::Handle->new_from_fd(fileno(STDIN), "r");
     # make some room for the matches
     print "\n\x1b[2K" x 10 . "\x1b[10A";
-    my $len = 1 + length$_[0];
+    my $len = 1 + length $_[0];
     print $_[0];
 
     # search the given directory
-    my @matches;
-    my $dir = $_[1];
-    my @contents;
-    my $input = '';
-    my $artist = '';
-    my $album = '';
-    my $prefix = '';
-    while ( 1 ) {
-        # get the next char, or extend if given tab, or press delete to start over
-        my $ch = getc();
-        last if ( $ch eq "\n" || $ch eq "\r" );
-        if ( ord( $ch ) == 127 ) {  # backspace
-            if ( $input ne '' ) {
-                print "\x1b[3D\x1b[0K";
-                $input = substr $input, 0, -1;
-            }
-        } elsif ( $ch eq "\x1b") {  # escape character \x1b[A or whatever
-            print "\x1b[2D\x1b[0K";  # get rid of the control sequence
-            $ch .= getc();  # bracket
-            print "\x1b[D\x1b[0K";
-            $ch .= getc();  # data value
-            if ( $ch eq "\x1b[3" ) {  # delete (erase all input)
-                getc();  # get the tilde (some control sequences end in tildes, delete is the only one I'm using)
-                $input = '';
-            }
-        } elsif ( ord( $ch ) == 9 ) {  # tab (autofill)
-            next if ( $input eq '' );
-            my $ext = extend( @matches );
-            if ( $ext ne '' ) {
-                $input = extend( @matches );
-                if ( -d "$_[1]/$input" ) {  # add a trailing slash so the user doesn't have to
-                    $input .= "/";
-                }
-            }
-        } else {
-            $input .= $ch;
-        }
+    my @matches; # list of everything that matches the input, with full relative directory path from $_[1]
+    my $scroll = 0; # the number to scroll through matches by
+    my $dir = $_[1]; # the directory we're searching in (either $playlists or ~/Music) (adds artist and album once they're there)
+    my @contents; # the contents of that directory
+    my $input = ''; # the string the user has typed
+    my $artist = ''; # if there's a slash in the input, this is everything up to and including the slash (otherwise it's empty)
+    my $album = ''; # if there's two slashes, this is everything after the first up to (and including) the second (otherwise it's empty)
+    my $prefix = ''; # everything after the last slash in the input
+    my $search_dirs = $_[2]; # search in directories in the input or not
+    my $blank_feedback = $_[3]; # display feedback when input is empty or not
 
-        # recalculate list of matches
-        # break up input on slashes (only when getting songs from ~/Music)
-        if ( $input =~ m/[^\/]\// && $_[1] !~ m/\/playlists\// ) {
-            my @splut = split "/", $input;
+    while (1) {
+        # calculate list of matches
+        # break up input on slashes (only when told to search directories)
+        if ($input =~ m/[^\/]+\// && $search_dirs == 1) {
+            my @splut = ($input =~ m/(^[^\/]+\/)([^\/]+\/)?([^\/]*)/);
             $artist = $splut[0];
-            $dir = $_[1] . $artist . "/";
+            $dir = $_[1] . $artist;
             # get a song out of an album
-            if ( scalar @splut > 2 || ( scalar @splut == 2 && $input =~ m/\/$/ ) ) {
+            if ($splut[1]) {
                 $album = $splut[1];
-                $dir .= $album . "/";
+                $dir .= $album;
             } else {
                 $album = '';
             }
             $prefix = $splut[-1];
             # edge case where a full artist or album has been entered but nothing comes after it
-            if ( $input =~ m/\/$/ ) {
+            if ($input =~ m/\/$/) {
                 $prefix = '';
             }
+
         # reset to artist search if no slashes (or starts with slash)
         } else {
             $artist = '';
@@ -167,36 +125,42 @@ sub input {
             $dir = $_[1];
             $prefix = $input;
         }
+
 #        print ERR "\$input: $input \t \$artist: $artist \t \$album: $album \t \$dir: $dir \t \$prefix: $prefix\n";
         # search deepest given directory if it exists
-        if ( -d $dir ) {
+        if (-d $dir) {
             @matches = ();
             opendir my $dh, $dir or die "Couldn't open directory \"$dir\": $!";
             @contents = grep { !/^\./ } readdir $dh;
             closedir $dh;
-            foreach my $match ( match( $prefix, @contents ) ) {
-                push( @matches, $match ) unless ( $match =~ m/^\s*$/ );
+            foreach my $match (match($prefix, @contents)) {
+                push(@matches, $match) if ($match !~ m/^\s*$/ && -d "$dir/$match" || $match =~ m/mp3$/); # keep out stuff that doesn't go on playlists
             }
-        } else {
+        } else { # can't do much if the user gives a nonexistent directory
             @matches = ();
         }
+
         # add directory prefixes as needed
-        foreach my $match ( @matches ) {
-            if ( $artist ne '' ) {
-                if ( $album ne '' ) {
-                    chomp( $match = "$artist/$album/$match" );
+        foreach my $match (@matches) {
+            if ($artist ne '') {
+                if ($album ne '') {
+                    chomp($match = "$artist$album$match");
                 } else {
-                    chomp( $match = "$artist/$match" );
+                    chomp($match = "$artist$match");
                 }
             }
         }
-        if ( $input ne '' ) {
+
+        @matches = sort @matches;
+
+        if ($input ne '' || $blank_feedback) {
             # print feedback
-            foreach ( 0 .. 9 ) {
+            foreach ($scroll .. $scroll+9) {
                 print "\n\x1b[${len}G\x1b[0K";
-                if ( $_ < scalar @matches ) {
-                    if ( length( $matches[$_] ) > $width - $len ) {
-                        print substr( $matches[$_], 0, $width - $len ) . "\x1b[1;31m\$\x1b[0m";
+                if (($_ - $scroll) < ((scalar @matches < 10) ? scalar @matches : 10)) {
+                    $_ %= scalar @matches;
+                    if (length($matches[$_]) > $width - $len) {
+                        print substr($matches[$_], 0, $width - $len) . "\x1b[1;31m\$\x1b[0m";
                     } else {
                         print $matches[$_];
                     }
@@ -206,7 +170,70 @@ sub input {
         } else {
             print "\n\x1b[2K" x 10 . "\x1b[10A\x1b[${len}G\x1b[0K";
         }
+
+        # get the next char, scroll with arrow keys, extend if given tab, or press delete to start over
+        my $ch = getc();
+        last if ($ch eq "\n" || $ch eq "\r");
+
+        # handle some characters differently
+        if (ord($ch) == 127) { # backspace
+            if ($input ne '') {
+                print "\x1b[3D\x1b[0K";
+                $input = substr $input, 0, -1;
+                $scroll = 0;
+            }
+
+        } elsif ($ch eq "\x1b") { # escape character \x1b[A or whatever
+            print "\x1b[2D\x1b[0K"; # get rid of the control sequence
+            $ch .= getc(); # bracket
+            print "\x1b[D\x1b[0K";
+            $ch .= getc(); # data value
+            if ($ch eq "\x1b[3") { # delete (erase all input)
+                getc(); # get the tilde (some control sequences end in tildes, delete is the only one I'm using)
+                $input = '';
+                $blank_feedback = $_[3];
+                $scroll = 0;
+
+            } elsif ($ch eq "\x1b[A") { # up arrow
+                if ($input eq '' && $blank_feedback == 0) {
+                    $blank_feedback = 1;
+                } else {
+                    $scroll -= 1;
+                }
+            } elsif ($ch eq "\x1b[B") { # down arrow
+                if ($input eq '' && $blank_feedback == 0) {
+                    $blank_feedback = 1;
+                } else {
+                    $scroll += 1;
+                }
+            }
+
+        } elsif (ord($ch) == 9) { # tab (autofill)
+            my $ext = extend(@matches); # the prefix common to all the matches, including directories
+            print ERR "$ext\n";
+            if ($ext ne $input) {
+                $input = $ext;
+                if (-d "$_[1]/$input" && $input !~ m/\/$/) {  # add a trailing slash so the user doesn't have to
+                    $input .= "/";
+                }
+                $scroll = 0;
+            } elsif (@matches && ($input ne '' || $blank_feedback)) {
+                $input = $matches[$scroll % scalar @matches];
+                if (-d "$_[1]/$input" && $input !~ m/\/$/) {  # add a trailing slash so the user doesn't have to
+                    $input .= "/";
+                }
+                $scroll = 0;
+            } elsif ($input eq '') {
+                $blank_feedback = 1; # pressing tab when input is empty allows you to see feedback on empty input
+            }
+
+        } else {
+            $input .= $ch unless ($ch eq "/" && ! $search_dirs); # don't take directories if we aren't searching them
+            $scroll = 0;
+        }
+
     }
+    # clear out all the stuff we put in the space
     print "\x1b[1G\x1b[0K\n" x 10;
     print "\x1b[10A";
 
@@ -216,150 +243,344 @@ sub input {
     return $input;
 }
 
-print 'Interactive playlist editor (enter "h" or "help" for help)' . "\n";
+### functions to do all of the options for the editor (new, delete (coming soon!), list, add, trim, rename)
+#TODO debug all of them
+#TODO write delete
 
-while ( 1 ) {
-    print "\n>>> ";
-    chomp( my $command = <STDIN> );
-    my $space = index $command, " ";
-    my $arg = "";
-    if ( $space > 0 ) {
-        $arg = substr $command, $space + 1;
-        $command = substr $command, 0, $space;
+# create a new playlist
+sub new {
+    my $name = $_[0];
+    while (-d "$playlists/$name") { # this includes being given the empty string
+        $name = input("Playlist name: ", "$playlists/", 0, 1);
+        return -1 if ($name eq ''); # enter nothing to cancel
+        if ($name =~ m/\//) {
+            print "Playlist name can't contain \"/\"\n";
+            next;
+        }
     }
-    switch ( $command ) {
-        case ["h", "help"] {
-            print "This is an interactive playlist editor. From here you can create, edit, and\n";
-            print "delete folders in ~/Music/playlists/.\n";
-            print "All commands that take an optional playlist name will prompt for a name if\n";
-            print "none is given.\n";
-            print "Commands:\n";
-            print "n, new:\n    Create a new playlist.\n";
-            print "l, list [name]:\n    List all existing playlists, or list songs on a given playlist.\n";
-            print "a, add [name]:\n    Add songs to a playlist that already exists.\n";
-            print "t, trim [name]:\n    Remove songs from a playlist.\n";
-            print "r, rename [name]:\n    Change the name of a playlist.\n";
-            print "d, delete [name]:\n    Delete a playlist.\n";
-            print "h, help:\n    Print this help.\n";
-            print "q, quit:\n    Exit the program.\n";
-        }
-        case ["q", "quit"] {
-            goto END;
-        }
-        case ["n", "new"] {  # create a new playlist
-            $arg = '';
-            print "Enter a name for the playlist, or Q to cancel:\n";
-            while ( $arg eq '' ) {
-                chomp( $arg = <STDIN> );
-                last if ( $arg =~ m/^[Qq]$/ );
-                if ( -e "$HOME/Music/playlists/$arg" ) {
-                    print "Playlist $arg already exists.\n";
-                    $arg = '';
-                } elsif ( $arg =~ m/\// ) {
-                    print "Playlist name can't contain \"/\"\n";
-                    $arg = '';
-                } else {
-                    mkdir "$HOME/Music/playlists/$arg";
-                }
-            }   
-        }
-        case ["l", "list"] {  # list all playlists, or songs on a playlist
-            if ( $arg ne '' ) {
-                # list songs on a playlist
-                if ( -e "$HOME/Music/playlists/$arg" ) {
-                    print qx( ls "$HOME/Music/playlists/$arg" );
-                } else {
-                    print "Playlist $arg does not exist.\n";
-                }
-            } else {
-                # or list all playlists
-                print "Available playlists:\n";
-                print qx( ls "$HOME/Music/playlists/" );
+    mkdir "$playlists/$name";
+}
+
+# remove an existing playlist
+sub del {
+    while (@_) {
+        my $name = $_[0];
+        while ($name eq '') {
+            $name = input("Playlist to delete: ", "$playlists/", 0, 1);
+            last if ($name eq ''); # enter nothing to cancel
+            if (! -d "$playlists/$name") {
+                print "Playlist $name doesn't exist.\n";
+                $name = '';
             }
         }
-        case ["a", "add"] {  # add songs to a playlist
-            if ( $arg eq '' || ! -d "$HOME/Music/playlists/$arg" ) {
-                if ( ! -d "$HOME/Music/playlists/$arg" ) {
-                    print "Playlist $arg doesn't exist.\n"
-                }
-                $arg = input( "Playlist to edit: ", "$HOME/Music/playlists/" );
-            }
-            # enter nothing to cancel
-            last if ( $arg eq '' || ! -d "$HOME/Music/playlists/$arg" );
-            while ( 1 ) {
-                my $input = input( "Song to add (q to quit): ", "$HOME/Music/" );
-                my $song = substr $input, index( $input, '/', index( $input, '/' ) + 1 ) + 1;
-                # strip off track number, unless it's not there (track is a single)
-                if ( $song =~ m/^\d+ / ) {
-                    $song = substr $song, index( $song, " " ) + 1;
-                }
-                if ( -e "$HOME/Music/$input" ) {
-                    if ( -d "$HOME/Music/$input" ) {
-                        print "$input is a directory.\n";
-                    } elsif ( -e "$HOME/Music/playlists/$arg/$song" ) {
-                        if ( $song =~ m/\s/ ) {
-                            print '"' . substr( $song, 0, -4 ) . "\" is already in $arg.\n";
-                        } else {
-                            print substr( $song, 0, -4 ) . " is already in $arg.\n";
-                        }
-                    } else {
-                        system( "ln", "$HOME/Music/$input", "$HOME/Music/playlists/$arg/$song" );
-                    }
-                } elsif ( $song =~ m/^[Qq]$/ ) {
-                    print "Done.\n";
-                    last;
-                } else {
-                    print "Song $song not found.\n";
-                }
-            }
-        }
-        case ["t", "trim"] {  # remove songs from a playlist
-            if ( $arg eq '' ) {
-                $arg = input( "Playlist to edit: ", "$HOME/Music/playlists/" );
-            } elsif ( ! -d "$HOME/Music/playlists/$arg" ) {
-                print "Playlist $arg doesn't exist.\n";
-                $arg = input( "Playlist to edit: ", "$HOME/Music/playlists/" );
-            }
-            # enter nothing to cancel
-            last if ( $arg eq '' );
-            if ( ! -d "$HOME/Music/playlists/$arg" ) {
-                print "Playlist $arg doesn't exist.\n";
-                last;
-            }
-            while ( 1 ) {
-                my $song = input( "Song to remove (q to quit): ", "$HOME/Music/playlists/$arg" );
-                if ( -e "$HOME/Music/playlists/$arg/$song" ) {
-                    system( "rm", "--", "$HOME/Music/playlists/$arg/$song" );
-                } elsif ( $song =~ m/^[Qq]$/ ) {
-                    print "Done.\n";
-                    last;
-                } else {
-                    print "\"$song\" is not in $arg.\n";
-                } 
-            }
-        }
-        case ["r", "rename"] {  # rename a playlist
-            if ( $arg eq '' || ! -d "$HOME/Music/playlists/$arg" ) {
-                if ( ! -d "$HOME/Music/playlists/$arg" ) {
-                    print "Playlist $arg doesn't exist.\n";
-                }
-                $arg = input( "Playlist to rename: ", "$HOME/Music/playlists/" );
-            }
-            # enter nothing to cancel
-            last if ( $arg eq '' || ! -d "$HOME/Music/playlists/$arg" );
-            my $name = getplist();
-            last if ( $name eq "/" || $name eq $arg );
-            if ( -d "$HOME/Music/playlists/$name" ) {
-                print "A playlist named \"$name\" already exists.\n";
-                last;
-            }
-            system( 'mv', "--", "$HOME/Music/playlists/$arg", "$HOME/Music/playlists/$name" );
-            print "Renamed $arg to $name.\n";
-        }
-        else { print "Command: $command Argument: $arg \n"; }
+        rmtree("$playlists/$name", {safe => 1});
     }
 }
 
-END:
-print "Done.\n";
-close( ERR );
+### list all playlists, or songs on a playlist
+# If given the empty string, lists all playlists; if given the name of a playlist, lists the songs on that playlist
+# If given a nonempty string that isn't the name of a playlist, prompts for a playlist to view
+sub list {
+    my $dir = $_[0];
+    while ($dir =~ m/^\/+$/ || ! -d "$playlists/$dir") { # given "/" (impossible directory name) as stand-in for '' (because $playlists/ is a directory that we might want to view)
+        print "Playlist \"$dir\" not found.\n" unless ($dir =~ m/^\/+$/);
+        $dir = input("Playlist to view: ", "$playlists/", 0);
+    }
+    print qx(ls "$playlists/$dir");
+}
+
+### add songs to a playlist
+# If given an empty string, prompts for a playlist name and then prompts for songs to add to that playlist
+# If given at least one nonempty string, if the first isn't the name of a playlist, replaces the first with a playlist name from prompting; if it is, it interprets that as the playlist to add songs to
+# If given exactly one nonempty string, prompts the user for songs to add to the playlist until the user enters the empty string
+# If given more than one nonempty string, it interprets all those after the first as songs and adds them to the playlist
+sub add {
+    my $plist = shift;
+    # get the name of the playlist to edit
+    if (! -d "$playlists/$plist") { # given an invalid playlist name (not the empty string)
+        $plist = ''; # signal for the loop that it's invalid
+    }
+    while ($plist eq '' || ! -d "$playlists/$plist") { # get the playlist
+        $plist = input("Playlist to edit: ", "$playlists/", 0, 1);
+        if ($plist eq '') { # enter nothing to cancel
+            return -1;
+        } elsif (! -d "$playlists/$plist") {
+            print "Playlist \"$plist\" not found.\n";
+            $plist = '';
+        }
+    }
+
+    # add songs
+    if (@_) { # given list of songs, just add those
+        while (shift) {
+            if (-e "$_") {
+                if (-d "$_") {
+                    print "$_ is a directory.\n";
+                    next;
+                }
+                my $song = (m/^[^\/]+\/[^\/]+\/(\d+ )?([^\/]+)/)[1]; # trim off artist and album, and track number if it's there
+                if (-e "$playlists/$plist/$song") {
+                    print "\"$song\" is already in $plist.\n";
+                    next;
+                }
+                system("ln", "-s", "$HOME/Music/$_", "$playlists/$plist/$song");
+            } else {
+                print "Song $_ not found.\n";
+            }
+        }
+
+    } else { # given just a playlist to edit, prompt the user for songs to add
+        while (1) {
+            $_ = input("Song to add: ", "$HOME/Music/", 1, 0);
+            last if ($_ eq '');
+            if (-e "$HOME/Music/$_") {
+                if (-d "$HOME/Music/$_") {
+                    print "$_ is a directory.\n";
+                    next;
+                }
+                my $song = (m/^[^\/]+\/[^\/]+\/(\d+ )?([^\/]+)/)[1]; # trim off artist and album, and track number if it's there
+                if (-e "$playlists/$plist/$song") {
+                    print "\"$song\" is already in $plist.\n";
+                    next;
+                }
+                system("ln", "$HOME/Music/$_", "$playlists/$plist/$song");
+            } else {
+                print "Song $_ not found.\n";
+            }
+        }
+    }
+}
+
+### remove songs from a playlist
+# takes either an empty string, a playlist name, or a playlist name and a list of songs to remove
+# if given an empty string, or a string that isn't a playlist name (even if also given a list of songs), get rid of any songs given and act as if given only the empty string
+# if given a valid playlist name and a list of songs, remove those songs from that playlist
+# if given only a valid playlist name, ask for songs until the user enters the empty string
+sub trim {
+    # get the name of the playlist to edit
+    my $plist = shift;
+    if ($plist =~ m/^${playlists}/) {
+        $plist = ($plist =~ m/^$playlists\/(.+)/)[0];
+    }
+    if (! -d "$playlists/$plist") { # given an invalid playlist name
+        print "Playlist $plist not found.\n";
+        $plist = '';
+    }
+    while ($plist eq '' || ! -d "$playlists/$plist") { # get the playlist
+        $plist = input("Playlist to edit: ", "$playlists/", 0, 1);
+        if ($plist eq '') { # enter nothing to cancel
+            return -1;
+        } elsif (! -d "$playlists/$plist") {
+            print "Playlist $plist not found.\n";
+            $plist = '';
+        }
+    }
+
+    # remove songs
+    if (@_) { # remove just the given songs
+        while ($_ = shift) {
+            if (m/^${playlists}\/${plist}/) {
+                s/^${playlists}\/${plist}\///;
+            }
+            if (-e "$playlists/$plist/$_") {
+                system('rm', "--", "$playlists/$plist/$_\n");
+            } else {
+                print "\"$_\" is not in $plist.\n";
+            }
+        }
+        return 0;
+    }
+
+    while (1) { # no given songs, prompt for songs to remove
+        my $song = input("Song to remove: ", "$playlists/$plist", 0, 1);
+        if ($song eq '') {
+            print "Done.\n";
+            last;
+        } elsif (-e "$playlists/$plist/$song") {
+            system("rm", "--", "$playlists/$plist/$song");
+        } else {
+            print "\"$song\" is not in $plist.\n";
+        }
+    }
+}
+
+### rename a playlist ('rename' is a reserved keyword)
+# takes either nothing, the current name of the playlist, or both the current name and desired name of the playlist
+# asks for what it doesn't get
+sub chname {
+    # get name of old playlist
+    my $old = @_ ? shift : '';
+    if (! -d "$playlists/$old") {
+        print "Playlist $old doesn't exist.\n";
+        $old = '';
+    }
+    while ($old eq '') {
+        $old = input("Playlist to rename: ", "$playlists/", 0, 1);
+        if ($old eq '') {
+            return -1;
+        }
+        if (! -d "$playlists/$old") {
+            print "Playlist $old doesn't exist.\n";
+            $old = '';
+        }
+    }
+
+    # get name to change to
+    my $new = @_ ? shift : '';
+    while ($new eq '') {
+        $new = input("New name: ", "$playlists/", 0, 0);
+        if ($new eq '' || $new eq $old) { # don't change any names in these cases
+            print "Canceled.\n";
+            return -1;
+        } elsif ($new =~ m/\//) {
+            print "Playlist name can't contain \"/\"\n";
+            $new = '';
+        } elsif (-d "$playlists/$new") {
+            print "Playlist $new already exists.\n";
+            $new = '';
+        }
+    }
+    system('mv', "--", "$playlists/$old", "$playlists/$new");
+    print "Renamed $old to $new.\n";
+}
+
+# called with a command-line argument - don't use the interactive interface
+sub task {
+    while (@ARGV) {
+        switch (shift @ARGV) {
+            case ["-n", "--new"] { # create a new playlist
+                if (@ARGV) {
+                    new(shift @ARGV);
+                } else {
+                    new('');
+                }
+            }
+
+            case ["d", "--delete"] { # delete a playlist
+                if (@ARGV) {
+                    del(shift @ARGV);
+                } else {
+                    del('');
+                }
+            }
+
+            case ["-l", "--list"] { # list all playlists, or songs on a playlist
+                if (@ARGV) {
+                    list(shift @ARGV);
+                } else {
+                    list("/");
+                }
+            }
+
+            case ["-a", "--add"] { # add songs to a playlist
+                if (@ARGV) {
+                    add(@ARGV); # takes a list of songs
+                } else {
+                    add("");
+                }
+            }
+
+            case ["-t", "--trim"] { # remove songs from a playlist
+                if (@ARGV) {
+                    trim(@ARGV); # takes a list of songs
+                } else {
+                    trim("");
+                }
+            }
+
+            case ["-r", "--rename"] { # rename a playlist
+                if (@ARGV) {
+                    if (scalar @ARGV > 1) {
+                        chname(shift @ARGV, shift @ARGV);
+                    } else {
+                        chname(shift @ARGV);
+                    }
+                } else {
+                    chname();
+                }
+            }
+
+            else {
+                print "Valid options are -a,-d,-l,-n,-r,-t or --add, --delete, --list, --new, --rename, --trim.\n";
+            }
+        }
+    }
+}
+
+sub interact {
+    print 'Interactive playlist editor (enter "h" or "help" for help)' . "\n";
+
+    while (1) {
+        print "\n>>> ";
+        chomp($_ = <STDIN>);
+        my $command = (m/^(\S*)/)[0];
+        my $arg = (m/^\S* ?(\S*)/)[0];
+
+        switch ($command) {
+            case ["n", "new"] {  # create a new playlist
+                new($arg);
+            }
+
+            case ["d", "delete"] { # delete a playlist
+                del($arg);
+            }
+
+            case ["l", "list"] { # list all playlists, or songs on a playlist
+                if ($arg eq '') {
+                    list("/"); # on the command line just asking for list should open a prompt for a playlist, not just list all the playlists
+                } else {
+                    list($arg);
+                }
+            }
+
+            case ["a", "add"] { # add songs to a playlist
+                add($arg);
+            }
+
+            case ["t", "trim"] { # remove songs from a playlist
+                trim($arg);
+            }
+
+            case ["r", "rename"] {  # rename a playlist
+                chname($arg);
+            }
+
+            case ["q", "quit"] {
+                goto END;
+            }
+
+            case ["h", "help"] {
+                print "This is an interactive playlist editor. From here you can create, edit, and\n";
+                print "delete folders in ~/Music/playlists/.\n";
+                print "All commands that take an optional playlist name will prompt for a name if\n";
+                print "none is given.\n";
+                print "Commands:\n";
+                print "n, new:\n    Create a new playlist.\n";
+                print "l, list [name]:\n    List all existing playlists, or list songs on a given playlist.\n";
+                print "a, add [name]:\n    Add songs to a playlist that already exists.\n";
+                print "t, trim [name]:\n    Remove songs from a playlist.\n";
+                print "r, rename [name]:\n    Change the name of a playlist.\n";
+                print "d, delete [name]:\n    Delete a playlist.\n";
+                print "h, help:\n    Print this help.\n";
+                print "q, quit:\n    Exit the program.\n";
+            }
+
+            else {
+                print "Enter \"h\" or \"help\" for help.\n";
+            }
+        }
+    }
+
+    END:
+    print "Done.\n";
+#    close ERR;
+}
+
+
+open(ERR, '>', "errors.txt") or die $!;
+if (scalar @ARGV == 0) {
+    interact();
+} else {
+    task();
+}
+close ERR;
